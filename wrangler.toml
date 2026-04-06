@@ -1,0 +1,5 @@
+name = "github-proxy"
+main = "src/worker.js"
+workers_dev = false
+preview_urls = false
+compatibility_date = "2025-07-18"
