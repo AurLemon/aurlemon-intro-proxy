@@ -57,3 +57,13 @@ Validation and handshake failures use normal HTTP 4xx/5xx and still return JSON 
 
 Query keys for contributions are restricted to from and to.
 Query keys for Bangumi collections are restricted to subject_type, type, limit, and offset.
+
+## Public Bangumi image proxy
+
+Bangumi cover images can be fetched without a handshake key:
+
+```text
+GET /bangumi/image?url=https%3A%2F%2Flain.bgm.tv%2Fr%2F400%2Fpic%2Fcover%2Fl%2Ff6%2F0f%2F604826_2XWRN.jpg
+```
+
+Only HTTPS `lain.bgm.tv` cover image paths are allowed.

@@ -1,6 +1,10 @@
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 20_000
+const BANGUMI_IMAGE_PROXY_PATH = '/bangumi/image'
+const BANGUMI_IMAGE_TIMEOUT_MS = 15_000
+const BANGUMI_IMAGE_CACHE_CONTROL =
+  'public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400'
 
 const FORWARD_HEADER_DENYLIST = new Set([
   'host',
@@ -11,6 +15,16 @@ const FORWARD_HEADER_DENYLIST = new Set([
   'x-real-ip',
   'cookie',
   'set-cookie',
+])
+
+const BANGUMI_IMAGE_HOSTS = new Set(['lain.bgm.tv'])
+const BANGUMI_IMAGE_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.gif',
+  '.avif',
 ])
 
 const ROUTE_DEFINITIONS = [
@@ -106,6 +120,13 @@ const jsonResponse = (payload, status = 200) => {
   return new Response(JSON.stringify(payload), {
     status,
     headers: JSON_HEADERS,
+  })
+}
+
+const plainResponse = (body, status = 200) => {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
   })
 }
 
@@ -211,6 +232,61 @@ const pickResponseHeaders = (headers) => {
   })
 
   return result
+}
+
+const pickImageResponseHeaders = (headers) => {
+  const keep = new Set([
+    'content-type',
+    'etag',
+    'expires',
+    'last-modified',
+  ])
+
+  const result = new Headers()
+
+  headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (keep.has(lower)) {
+      result.set(lower, value)
+    }
+  })
+
+  result.set('cache-control', BANGUMI_IMAGE_CACHE_CONTROL)
+  result.set('x-content-type-options', 'nosniff')
+
+  return result
+}
+
+const hasAllowedBangumiImageExtension = (pathname) => {
+  const lower = pathname.toLowerCase()
+
+  return [...BANGUMI_IMAGE_EXTENSIONS].some((extension) =>
+    lower.endsWith(extension),
+  )
+}
+
+const isAllowedBangumiImageUrl = (urlObj) => {
+  if (urlObj.protocol !== 'https:') {
+    return false
+  }
+
+  if (!BANGUMI_IMAGE_HOSTS.has(urlObj.hostname)) {
+    return false
+  }
+
+  if (urlObj.searchParams.size > 0) {
+    return false
+  }
+
+  if (
+    !/^\/(?:r\/\d+\/)?pic\/cover\/[a-z]\/[a-z0-9]{2}\/[a-z0-9]{2}\/[^/]+$/i.test(
+      urlObj.pathname,
+    )
+  ) {
+    return false
+  }
+
+  return hasAllowedBangumiImageExtension(urlObj.pathname)
 }
 
 const toBase64 = (arrayBuffer) => {
@@ -328,11 +404,113 @@ const createUpstreamEnvelope = ({
   durationMs: Date.now() - startedAt,
 })
 
+const proxyBangumiImage = async ({
+  request,
+  requestUrl,
+  requestId,
+  startedAt,
+}) => {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return plainResponse('Method Not Allowed', 405)
+  }
+
+  const rawUrl = requestUrl.searchParams.get('url')
+
+  if (!rawUrl) {
+    return plainResponse('Missing image url', 400)
+  }
+
+  let imageUrl
+
+  try {
+    imageUrl = new URL(rawUrl)
+  } catch {
+    return plainResponse('Invalid image url', 400)
+  }
+
+  if (!isAllowedBangumiImageUrl(imageUrl)) {
+    return plainResponse('Image target is not allowed', 403)
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), BANGUMI_IMAGE_TIMEOUT_MS)
+
+  let upstreamResponse
+
+  try {
+    upstreamResponse = await fetch(imageUrl.toString(), {
+      method: request.method,
+      headers: new Headers({
+        accept:
+          request.headers.get('accept') ||
+          'image/avif,image/webp,image/*,*/*;q=0.8',
+        'user-agent': 'AurLemonIntroProxy/1.0',
+      }),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    clearTimeout(timeoutId)
+
+    const basicError = toError(error)
+    const timeoutError = basicError.name === 'AbortError'
+
+    return jsonResponse(
+      createErrorEnvelope({
+        requestId,
+        startedAt,
+        status: timeoutError ? 504 : 502,
+        error: timeoutError ? 'Image request timeout' : 'Image request failed',
+        body: basicError.message,
+      }),
+      timeoutError ? 504 : 502,
+    )
+  }
+
+  clearTimeout(timeoutId)
+
+  if (!upstreamResponse.ok) {
+    return new Response(upstreamResponse.body, {
+      status: upstreamResponse.status,
+      headers: pickImageResponseHeaders(upstreamResponse.headers),
+    })
+  }
+
+  const contentType = (
+    upstreamResponse.headers.get('content-type') || ''
+  ).toLowerCase()
+
+  if (!contentType.startsWith('image/')) {
+    return jsonResponse(
+      createErrorEnvelope({
+        requestId,
+        startedAt,
+        status: 502,
+        error: 'Upstream response is not an image',
+      }),
+      502,
+    )
+  }
+
+  return new Response(request.method === 'HEAD' ? null : upstreamResponse.body, {
+    status: upstreamResponse.status,
+    headers: pickImageResponseHeaders(upstreamResponse.headers),
+  })
+}
+
 export default {
   async fetch(request, env) {
     const requestId = createRequestId()
     const startedAt = Date.now()
     const urlObj = new URL(request.url)
+
+    if (urlObj.pathname === BANGUMI_IMAGE_PROXY_PATH) {
+      return await proxyBangumiImage({
+        request,
+        requestUrl: urlObj,
+        requestId,
+        startedAt,
+      })
+    }
 
     if (request.method !== 'POST' || urlObj.pathname !== '/') {
       return jsonResponse(
