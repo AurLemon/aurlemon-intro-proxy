@@ -6,15 +6,12 @@ The worker accepts only POST / with JSON body:
 
 ```json
 {
-  "key": "your-handshake-key",
-  "url": "https://github.com/login/oauth/access_token",
-  "method": "POST",
+  "key": "your-intro-proxy-handshake-key",
+  "url": "https://api.bgm.tv/v0/users/AurLemon/collections?subject_type=2&type=3&limit=100&offset=0",
+  "method": "GET",
   "headers": {
-    "accept": "application/json",
-    "content-type": "application/x-www-form-urlencoded"
+    "accept": "application/json"
   },
-  "bodyType": "raw",
-  "body": "client_id=...&client_secret=...&code=...",
   "timeoutMs": 12000
 }
 ```
@@ -56,5 +53,7 @@ Validation and handshake failures use normal HTTP 4xx/5xx and still return JSON 
 - POST https://github.com/login/oauth/access_token
 - GET https://api.github.com/user
 - GET https://github.com/users/:username/contributions?from=YYYY-MM-DD&to=YYYY-MM-DD
+- GET https://api.bgm.tv/v0/users/:username/collections?subject_type=1|2&type=1|2|3&limit=1..100&offset=0..
 
 Query keys for contributions are restricted to from and to.
+Query keys for Bangumi collections are restricted to subject_type, type, limit, and offset.

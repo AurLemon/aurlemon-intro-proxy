@@ -1,7 +1,7 @@
 {
-  "name": "github-proxy",
+  "name": "aurlemon-intro-proxy",
   "version": "1.0.0",
-  "description": "Cloudflare Worker proxy for GitHub OAuth and contributions endpoints.",
+  "description": "Cloudflare Worker proxy for AurLemon Intro upstream API requests.",
   "main": "src/worker.js",
   "type": "module",
   "scripts": {

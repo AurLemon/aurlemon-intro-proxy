@@ -15,6 +15,41 @@ const FORWARD_HEADER_DENYLIST = new Set([
 
 const ROUTE_DEFINITIONS = [
   {
+    host: 'api.bgm.tv',
+    method: 'GET',
+    path: /^\/v0\/users\/[^/]+\/collections$/,
+    validateQuery: (urlObj) => {
+      const allowed = new Set(['subject_type', 'type', 'limit', 'offset'])
+
+      for (const [key, value] of urlObj.searchParams.entries()) {
+        if (!allowed.has(key)) {
+          return false
+        }
+
+        if (!/^\d+$/.test(value)) {
+          return false
+        }
+      }
+
+      const subjectType = urlObj.searchParams.get('subject_type')
+      const collectionType = urlObj.searchParams.get('type')
+      const limit = Number(urlObj.searchParams.get('limit') ?? '0')
+      const offset = Number(urlObj.searchParams.get('offset') ?? '0')
+
+      return (
+        (subjectType === '1' || subjectType === '2') &&
+        (collectionType === '1' ||
+          collectionType === '2' ||
+          collectionType === '3') &&
+        Number.isInteger(limit) &&
+        limit >= 1 &&
+        limit <= 100 &&
+        Number.isInteger(offset) &&
+        offset >= 0
+      )
+    },
+  },
+  {
     host: 'github.com',
     method: 'POST',
     path: /^\/login\/oauth\/access_token$/,
@@ -91,8 +126,7 @@ const createErrorEnvelope = ({
 })
 
 const resolveProxyKey = (env) => {
-  const value =
-    env.GITHUB_PROXY_HANDSHAKE_KEY || env.OAUTH_PROXY_KEY || env.PROXY_KEY || ''
+  const value = env.INTRO_PROXY_HANDSHAKE_KEY || ''
 
   return typeof value === 'string' ? value.trim() : ''
 }

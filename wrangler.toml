@@ -1,4 +1,4 @@
-name = "github-proxy"
+name = 'aurlemon-intro-proxy'
 main = "src/worker.js"
 workers_dev = false
 preview_urls = false
