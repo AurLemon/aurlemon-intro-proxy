@@ -54,9 +54,16 @@ Validation and handshake failures use normal HTTP 4xx/5xx and still return JSON 
 - GET https://api.github.com/user
 - GET https://github.com/users/:username/contributions?from=YYYY-MM-DD&to=YYYY-MM-DD
 - GET https://api.bgm.tv/v0/users/:username/collections?subject_type=1|2&type=1|2|3&limit=1..100&offset=0..
+- POST https://connect.linux.do/oauth2/token
+- GET https://connect.linux.do/api/user
 
 Query keys for contributions are restricted to from and to.
 Query keys for Bangumi collections are restricted to subject_type, type, limit, and offset.
+Linux DO OAuth routes do not accept query parameters.
+
+The Linux DO token exchange forwards a Basic authorization header and an
+authorization code. Treat both request headers and bodies as secrets: do not
+add request logging to the Worker or any surrounding edge log pipeline.
 
 ## Public Bangumi image proxy
 

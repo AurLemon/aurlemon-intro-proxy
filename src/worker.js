@@ -92,6 +92,18 @@ const ROUTE_DEFINITIONS = [
       return true
     },
   },
+  {
+    host: 'connect.linux.do',
+    method: 'POST',
+    path: /^\/oauth2\/token$/,
+    validateQuery: (urlObj) => urlObj.searchParams.size === 0,
+  },
+  {
+    host: 'connect.linux.do',
+    method: 'GET',
+    path: /^\/api\/user$/,
+    validateQuery: (urlObj) => urlObj.searchParams.size === 0,
+  },
 ]
 
 const toError = (error) => {

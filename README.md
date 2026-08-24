@@ -10,10 +10,16 @@ Cloudflare Worker proxy for AurLemon Intro upstream API requests.
   - POST https://github.com/login/oauth/access_token
   - GET https://api.github.com/user
   - GET https://github.com/users/:username/contributions
+  - POST https://connect.linux.do/oauth2/token
+  - GET https://connect.linux.do/api/user
 - Publicly proxies whitelisted Bangumi cover images without a handshake key:
   - GET /bangumi/image?url=https://lain.bgm.tv/r/400/pic/cover/...
 - Wraps upstream response in a stable JSON envelope for backend parsing.
 - Includes request diagnostics fields: requestId and durationMs.
+
+Linux DO OAuth forwarding carries a client credential or short-lived access
+token inside the encrypted request to this Worker. The Worker must not log
+request headers or bodies, and its route allowlist must remain exact.
 
 ## Environment
 
