@@ -51,6 +51,8 @@ Validation and handshake failures use normal HTTP 4xx/5xx and still return JSON 
 ## Allowed upstream routes
 
 - POST https://github.com/login/oauth/access_token
+- GET https://api.github.com/users/:username
+- GET https://linux.do/u/:username.json
 - GET https://api.github.com/user
 - GET https://github.com/users/:username/contributions?from=YYYY-MM-DD&to=YYYY-MM-DD
 - GET https://api.bgm.tv/v0/users/:username/collections?subject_type=1|2&type=1|2|3&limit=1..100&offset=0..
@@ -74,3 +76,19 @@ GET /bangumi/image?url=https%3A%2F%2Flain.bgm.tv%2Fr%2F400%2Fpic%2Fcover%2Fl%2Ff
 ```
 
 Only HTTPS `lain.bgm.tv` cover image paths are allowed.
+
+## Public GitHub / Linux DO avatar proxy
+
+`GET /avatar?url=<encoded-https-avatar-url>` (also supports HEAD) proxies public
+GitHub and Linux DO avatars without a handshake key. Only GitHub username PNGs,
+`avatars.githubusercontent.com/u/:id` or `/in/:id`, Linux DO user / letter avatars (including `cdn.ldstatic.com`),
+and `connect.linux.do/avatar/:size.png` are accepted. Each redirect is checked
+against the same allowlist (up to three redirects); cookies and authorization
+headers are never forwarded. Only raster image responses are returned as success.
+Successful images use the existing one-day browser / seven-day shared cache
+headers, with a one-day Cloudflare fetch cache. Failures are not given image cache
+headers. Original image bytes and dimensions are preserved.
+
+Deploy this Worker before enabling `NUXT_PUBLIC_SOCIAL_AVATAR_PROXY_URL` in Intro.
+Intro uses the existing `INTRO_PROXY_URL` as the default public avatar proxy base;
+only the public Worker URL is exposed, never the handshake key.

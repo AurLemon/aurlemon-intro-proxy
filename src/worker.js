@@ -72,6 +72,18 @@ const ROUTE_DEFINITIONS = [
   {
     host: 'api.github.com',
     method: 'GET',
+    path: /^\/users\/[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i,
+    validateQuery: (urlObj) => urlObj.searchParams.size === 0,
+  },
+  {
+    host: 'linux.do',
+    method: 'GET',
+    path: /^\/u\/[a-z\d_][a-z\d_.-]{0,59}\.json$/i,
+    validateQuery: (urlObj) => urlObj.searchParams.size === 0,
+  },
+  {
+    host: 'api.github.com',
+    method: 'GET',
     path: /^\/user$/,
     validateQuery: (urlObj) => urlObj.searchParams.size === 0,
   },
@@ -121,7 +133,10 @@ const toError = (error) => {
 }
 
 const createRequestId = () => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
     return crypto.randomUUID()
   }
 
@@ -247,12 +262,7 @@ const pickResponseHeaders = (headers) => {
 }
 
 const pickImageResponseHeaders = (headers) => {
-  const keep = new Set([
-    'content-type',
-    'etag',
-    'expires',
-    'last-modified',
-  ])
+  const keep = new Set(['content-type', 'etag', 'expires', 'last-modified'])
 
   const result = new Headers()
 
@@ -299,6 +309,55 @@ const isAllowedBangumiImageUrl = (urlObj) => {
   }
 
   return hasAllowedBangumiImageExtension(urlObj.pathname)
+}
+
+// Only public provider avatar paths are accepted; credentials and arbitrary query
+// parameters never reach the upstream. Redirects are validated on every hop.
+const isAllowedAvatarUrl = (urlObj) => {
+  if (
+    urlObj.protocol !== 'https:' ||
+    urlObj.username ||
+    urlObj.password ||
+    urlObj.port ||
+    urlObj.hash ||
+    urlObj.href.length > 2048
+  )
+    return false
+  const params = urlObj.searchParams
+  for (const [key, value] of params) {
+    if (!['s', 'size', 'v'].includes(key) || !/^\d{1,10}$/.test(value))
+      return false
+    if (
+      (key === 's' || key === 'size') &&
+      (Number(value) < 1 || Number(value) > 2048)
+    )
+      return false
+    if (params.getAll(key).length !== 1) return false
+  }
+  if (urlObj.hostname === 'avatars.githubusercontent.com') {
+    return /^\/(?:u|in)\/\d+$/.test(urlObj.pathname)
+  }
+  if (urlObj.hostname === 'github.com') {
+    return /^\/[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?\.png$/i.test(urlObj.pathname)
+  }
+  if (params.size) return false
+  if (
+    urlObj.hostname === 'linux.do' ||
+    urlObj.hostname === 'cdn.ldstatic.com'
+  ) {
+    return (
+      /^\/user_avatar\/linux\.do\/[a-z\d_.-]+\/\d{1,4}\/\d+(?:_\d+)?\.(?:png|jpg|jpeg|webp)$/i.test(
+        urlObj.pathname,
+      ) ||
+      /^\/letter_avatar_proxy\/v4\/letter\/[a-z\d_-]+\/[a-f\d]{6}\/\d{1,4}\.png$/i.test(
+        urlObj.pathname,
+      )
+    )
+  }
+  return (
+    urlObj.hostname === 'connect.linux.do' &&
+    /^\/avatar\/\d{1,4}\.png$/i.test(urlObj.pathname)
+  )
 }
 
 const toBase64 = (arrayBuffer) => {
@@ -374,7 +433,9 @@ const parseUpstreamResponse = async (upstreamResponse) => {
     }
   }
 
-  const contentType = (upstreamResponse.headers.get('content-type') || '').toLowerCase()
+  const contentType = (
+    upstreamResponse.headers.get('content-type') || ''
+  ).toLowerCase()
 
   if (contentType.includes('application/json')) {
     return {
@@ -421,6 +482,7 @@ const proxyBangumiImage = async ({
   requestUrl,
   requestId,
   startedAt,
+  avatar = false,
 }) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return plainResponse('Method Not Allowed', 405)
@@ -440,26 +502,56 @@ const proxyBangumiImage = async ({
     return plainResponse('Invalid image url', 400)
   }
 
-  if (!isAllowedBangumiImageUrl(imageUrl)) {
+  if (
+    !(avatar
+      ? isAllowedAvatarUrl(imageUrl)
+      : isAllowedBangumiImageUrl(imageUrl))
+  ) {
     return plainResponse('Image target is not allowed', 403)
   }
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), BANGUMI_IMAGE_TIMEOUT_MS)
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    BANGUMI_IMAGE_TIMEOUT_MS,
+  )
 
   let upstreamResponse
 
   try {
-    upstreamResponse = await fetch(imageUrl.toString(), {
-      method: request.method,
-      headers: new Headers({
-        accept:
-          request.headers.get('accept') ||
-          'image/avif,image/webp,image/*,*/*;q=0.8',
-        'user-agent': 'AurLemonIntroProxy/1.0',
-      }),
-      signal: controller.signal,
-    })
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      upstreamResponse = await fetch(imageUrl.toString(), {
+        method: request.method,
+        headers: new Headers({
+          accept:
+            request.headers.get('accept') ||
+            'image/avif,image/webp,image/*,*/*;q=0.8',
+          'user-agent': 'AurLemonIntroProxy/1.0',
+        }),
+        signal: controller.signal,
+        ...(avatar
+          ? {
+              redirect: 'manual',
+              cf: {
+                cacheEverything: true,
+                cacheTtlByStatus: { '200-299': 86400, '300-599': -1 },
+              },
+            }
+          : {}),
+      })
+      if (
+        !avatar ||
+        ![301, 302, 303, 307, 308].includes(upstreamResponse.status)
+      )
+        break
+      const location = upstreamResponse.headers.get('location')
+      await upstreamResponse.body?.cancel()
+      if (!location || redirects === 3)
+        throw new Error('Avatar redirect limit exceeded')
+      imageUrl = new URL(location, imageUrl)
+      if (!isAllowedAvatarUrl(imageUrl))
+        throw new Error('Avatar redirect target is not allowed')
+    }
   } catch (error) {
     clearTimeout(timeoutId)
 
@@ -481,6 +573,13 @@ const proxyBangumiImage = async ({
   clearTimeout(timeoutId)
 
   if (!upstreamResponse.ok) {
+    if (avatar) {
+      await upstreamResponse.body?.cancel()
+      return plainResponse(
+        'Avatar upstream request failed',
+        upstreamResponse.status,
+      )
+    }
     return new Response(upstreamResponse.body, {
       status: upstreamResponse.status,
       headers: pickImageResponseHeaders(upstreamResponse.headers),
@@ -491,7 +590,10 @@ const proxyBangumiImage = async ({
     upstreamResponse.headers.get('content-type') || ''
   ).toLowerCase()
 
-  if (!contentType.startsWith('image/')) {
+  if (
+    !contentType.startsWith('image/') ||
+    (avatar && !/^image\/(?:png|jpeg|webp|gif|avif)(?:;|$)/.test(contentType))
+  ) {
     return jsonResponse(
       createErrorEnvelope({
         requestId,
@@ -503,10 +605,13 @@ const proxyBangumiImage = async ({
     )
   }
 
-  return new Response(request.method === 'HEAD' ? null : upstreamResponse.body, {
-    status: upstreamResponse.status,
-    headers: pickImageResponseHeaders(upstreamResponse.headers),
-  })
+  return new Response(
+    request.method === 'HEAD' ? null : upstreamResponse.body,
+    {
+      status: upstreamResponse.status,
+      headers: pickImageResponseHeaders(upstreamResponse.headers),
+    },
+  )
 }
 
 export default {
@@ -515,10 +620,14 @@ export default {
     const startedAt = Date.now()
     const urlObj = new URL(request.url)
 
-    if (urlObj.pathname === BANGUMI_IMAGE_PROXY_PATH) {
+    if (
+      urlObj.pathname === BANGUMI_IMAGE_PROXY_PATH ||
+      urlObj.pathname === '/avatar'
+    ) {
       return await proxyBangumiImage({
         request,
         requestUrl: urlObj,
+        avatar: urlObj.pathname === '/avatar',
         requestId,
         startedAt,
       })
