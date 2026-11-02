@@ -1,5 +1,17 @@
 name = 'aurlemon-intro-proxy'
 main = "src/worker.js"
-workers_dev = false
+workers_dev = true
 preview_urls = false
 compatibility_date = "2025-07-18"
+
+# Structured diagnostics only; do not capture automatic request invocation logs.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = false
+
+[vars]
+INTRO_PROXY_DIAGNOSTICS = 'true'

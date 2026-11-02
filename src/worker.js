@@ -146,7 +146,12 @@ const createRequestId = () => {
 const jsonResponse = (payload, status = 200) => {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: JSON_HEADERS,
+    headers: {
+      ...JSON_HEADERS,
+      ...(payload.requestId
+        ? { 'x-intro-proxy-worker-id': payload.requestId }
+        : {}),
+    },
   })
 }
 
@@ -614,10 +619,9 @@ const proxyBangumiImage = async ({
   )
 }
 
-export default {
-  async fetch(request, env) {
-    const requestId = createRequestId()
-    const startedAt = Date.now()
+const workerHandler = {
+  async fetch(request, env, diagnostic) {
+    const { requestId, startedAt } = diagnostic
     const urlObj = new URL(request.url)
 
     if (
@@ -647,7 +651,11 @@ export default {
 
     const payload = await parsePayload(request)
 
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload)
+    ) {
       return jsonResponse(
         createErrorEnvelope({
           requestId,
@@ -729,11 +737,29 @@ export default {
       )
     }
 
+    // Only fixed OAuth paths are logged. Public lookup usernames and queries are omitted.
+    diagnostic.upstreamHost = upstreamUrl.hostname
+    diagnostic.operation =
+      upstreamUrl.pathname === '/login/oauth/access_token'
+        ? 'github.token'
+        : upstreamUrl.hostname === 'api.github.com' &&
+            upstreamUrl.pathname === '/user'
+          ? 'github.user'
+          : 'other'
+    diagnostic.upstreamMethod = method
+    diagnostic.upstreamStartedMs = Date.now() - startedAt
+    diagnostic.phase = 'upstream_fetch'
+    if (diagnostic.verbose)
+      logDiagnostic('INTRO_PROXY_UPSTREAM_STARTED', diagnostic)
+
     const timeoutMs = clampTimeout(payload.timeoutMs)
     const forwardedHeaders = normalizeUpstreamHeaders(payload.headers)
     const upstreamBody = buildUpstreamBody(payload, method)
 
-    if (payload.bodyType === 'json' && !forwardedHeaders['content-type']) {
+    if (
+      payload.bodyType === 'json' &&
+      !forwardedHeaders['content-type']
+    ) {
       forwardedHeaders['content-type'] = 'application/json'
     }
 
@@ -754,6 +780,10 @@ export default {
 
       const basicError = toError(error)
       const timeoutError = basicError.name === 'AbortError'
+      diagnostic.failure = timeoutError
+        ? 'upstream_timeout'
+        : 'upstream_fetch'
+      diagnostic.errorName = basicError.name
 
       return jsonResponse(
         createErrorEnvelope({
@@ -770,10 +800,27 @@ export default {
     }
 
     clearTimeout(timeoutId)
+    diagnostic.upstreamHeadersMs =
+      Date.now() - startedAt - diagnostic.upstreamStartedMs
+    diagnostic.upstreamStatus = upstreamResponse.status
+    diagnostic.githubRequestId = upstreamResponse.headers
+      .get('x-github-request-id')
+      ?.slice(0, 128)
+    diagnostic.rateLimitRemaining = upstreamResponse.headers
+      .get('x-ratelimit-remaining')
+      ?.slice(0, 32)
+    diagnostic.phase = 'upstream_body'
 
     try {
-      const { bodyType, body } = await parseUpstreamResponse(upstreamResponse)
+      const { bodyType, body } =
+        await parseUpstreamResponse(upstreamResponse)
 
+      diagnostic.upstreamBodyMs =
+        Date.now() -
+        startedAt -
+        diagnostic.upstreamStartedMs -
+        diagnostic.upstreamHeadersMs
+      diagnostic.phase = 'completed'
       return jsonResponse(
         createUpstreamEnvelope({
           upstreamResponse,
@@ -786,6 +833,8 @@ export default {
       )
     } catch (error) {
       const basicError = toError(error)
+      diagnostic.failure = 'upstream_body'
+      diagnostic.errorName = basicError.name
 
       return jsonResponse(
         createErrorEnvelope({
@@ -797,6 +846,86 @@ export default {
         }),
         502,
       )
+    }
+  },
+}
+
+const diagnosticId = (value) =>
+  typeof value === 'string' &&
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+    value,
+  )
+    ? value
+    : undefined
+
+const logDiagnostic = (event, diagnostic, level = 'info') => {
+  const { startedAt, verbose, ...fields } = diagnostic
+  console[level]({
+    event,
+    ...fields,
+    durationMs: Date.now() - startedAt,
+  })
+}
+
+export default {
+  async fetch(request, env) {
+    const diagnostic = {
+      requestId: createRequestId(),
+      clientRequestId: diagnosticId(
+        request.headers.get('x-intro-proxy-request-id'),
+      ),
+      traceId: diagnosticId(
+        request.headers.get('x-intro-proxy-trace-id'),
+      ),
+      startedAt: Date.now(),
+      verbose: /^(1|true|yes|on)$/i.test(
+        env.INTRO_PROXY_DIAGNOSTICS || '',
+      ),
+      colo: request.cf?.colo,
+      cfRay: request.headers.get('cf-ray')?.slice(0, 128),
+      phase: 'validation',
+    }
+    const loggedRoute =
+      request.method === 'POST' &&
+      new URL(request.url).pathname === '/'
+    if (loggedRoute && diagnostic.verbose)
+      logDiagnostic('INTRO_PROXY_REQUEST_RECEIVED', diagnostic)
+    try {
+      const response = await workerHandler.fetch(
+        request,
+        env,
+        diagnostic,
+      )
+      if (loggedRoute) {
+        diagnostic.outerStatus = response.status
+        const failed =
+          !response.ok ||
+          diagnostic.failure ||
+          diagnostic.upstreamStatus >= 400
+        if (
+          diagnostic.verbose ||
+          failed ||
+          Date.now() - diagnostic.startedAt >= 1000
+        ) {
+          logDiagnostic(
+            'INTRO_PROXY_WORKER_COMPLETED',
+            diagnostic,
+            failed ? 'warn' : 'info',
+          )
+        }
+      }
+      return response
+    } catch (error) {
+      if (loggedRoute) {
+        diagnostic.failure = 'worker_exception'
+        diagnostic.errorName = toError(error).name
+        logDiagnostic(
+          'INTRO_PROXY_WORKER_FAILED',
+          diagnostic,
+          'error',
+        )
+      }
+      throw error
     }
   },
 }

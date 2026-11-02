@@ -92,3 +92,38 @@ headers. Original image bytes and dimensions are preserved.
 Deploy this Worker before enabling `NUXT_PUBLIC_SOCIAL_AVATAR_PROXY_URL` in Intro.
 Intro uses the existing `INTRO_PROXY_URL` as the default public avatar proxy base;
 only the public Worker URL is exposed, never the handshake key.
+
+## Correlated diagnostics
+
+The Intro backend sends random UUID headers `x-intro-proxy-request-id` and
+`x-intro-proxy-trace-id`. The Worker accepts only UUID-shaped diagnostic IDs,
+keeps its own independent `requestId`, and returns it in
+`x-intro-proxy-worker-id` as well as the existing envelope. No identity or
+credentials are derived from these IDs, and neither header is forwarded upstream.
+
+`INTRO_PROXY_DIAGNOSTICS=true` enables `INTRO_PROXY_REQUEST_RECEIVED`,
+`INTRO_PROXY_UPSTREAM_STARTED` and all `INTRO_PROXY_WORKER_COMPLETED` records.
+Failures and requests taking at least one second are logged even when disabled.
+The checked-in Wrangler config enables structured Workers Logs at full sampling
+and this variable, while disabling automatic invocation logs. No deployment is
+performed by changing local files. Check retention and log ingestion limits in
+your account when deploying. Set the variable to false after detailed diagnosis
+if only slow and failed requests are needed.
+
+Records contain `requestId`, `clientRequestId`, `traceId`, CF `colo` / ray,
+`phase`, outer and upstream statuses, `durationMs`, `upstreamStartedMs`,
+`upstreamHeadersMs`, `upstreamBodyMs`, GitHub request ID and remaining rate limit.
+The headers timer includes upstream connection / TLS and time to response headers,
+not just GitHub execution. The existing envelope duration measures the whole
+Worker operation. The backend total minus this duration also includes network,
+EO, queueing and response transfer, so it cannot isolate EO latency.
+
+Search backend `requestId` as Worker `clientRequestId`, or search the shared
+OAuth `traceId`. If an outer 525 has no matching Worker receipt, investigate the
+path before Worker execution, while allowing for log loss or collection errors.
+These records do not reveal EO's selected origin IP and cannot alone prove
+which network hop failed.
+
+Never log request or response bodies, authorization / cookie headers, handshake
+keys, OAuth codes / state, tokens, emails, public lookup usernames or query
+strings. Worker operation names are fixed categories rather than request URLs.
